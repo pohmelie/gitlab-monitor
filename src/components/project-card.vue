@@ -197,48 +197,36 @@
         const showTags = this.showTags
         const fetchCount = Config.root.fetchCount
 
-        const branches = await this.$api(`/projects/${this.projectId}/repository/branches`, {
-          per_page: fetchCount > 100 ? 100 : fetchCount
-        }, { follow_next_page_links: fetchCount > 100 })
-        const branchNames = branches.filter(branch => showMerged ? true : !branch.merged)
-          .sort((a, b) => new Date(b.commit.committed_date).getTime() - new Date(a.commit.committed_date).getTime()).reverse()
-          .map(branch => branch.name)
-          .filter(branchName => {
-            return !!branchName.match(new RegExp(this.config.include)) &&
-              (!this.config.exclude || !branchName.match(new RegExp(this.config.exclude)))
-          })
-        let tags = []
-        if (showTags) {
-          tags = await this.$api(`/projects/${this.projectId}/repository/tags`, {
-            per_page: fetchCount > 100 ? 100 : fetchCount
-          }, { follow_next_page_links: fetchCount > 100 })
-        }
-        const tagNames = tags.map((tag) => tag.name)
-        const newPipelines = {}
+        const pipelinesByRef = {}
+        const resolvedPipelinesByRef = {}
+        const refNames = []
         let count = 0
-        const refNames = branchNames.concat(tagNames)
 
         let hideSkippedPipelines = Config.getProjectProperty('hideSkippedPipelines', this.project.path_with_namespace)
 
-        refLoop:
-        for (const refName of refNames) {
-          const pipelines = await this.$api(`/projects/${this.projectId}/pipelines`, {
-            ref: refName,
-            per_page: fetchCount > 100 ? 100 : fetchCount
-          }, { follow_next_page_links: fetchCount > 100 })
+        const pipelines = await this.$api(`/projects/${this.projectId}/pipelines`, {
+          per_page: fetchCount > 100 ? 100 : fetchCount,
+          order_by: "id",
+          sort: "desc",
+        }, { follow_next_page_links: fetchCount > 100 })
 
-          const resolvedPipelines = []
+        const historyCount = Config.getProjectProperty('historyCount', this.project.path_with_namespace)
 
-          if (pipelines.length > 0) {
-            const activePipelines = []
-
-            for (const pipeline of pipelines) {
-              if (pipeline.status === 'pending' || pipeline.status === 'running') {
-                activePipelines.push(pipeline)
-              }
+        if (pipelines.length > 0) {
+          for (const pipeline of pipelines) {
+            let refName = pipeline.ref
+            if (!(refName in pipelinesByRef)) {
+              refNames.push(refName)
+              pipelinesByRef[refName] = []
             }
+            if (pipelinesByRef[refName].length >= historyCount) {
+              continue
+            }
+            pipelinesByRef[refName].push(pipeline)
+          }
 
-            for (const pipeline of activePipelines) {
+          for (const refName of refNames) {
+            for (const pipeline of pipelinesByRef[refName]) {
               const resolvedPipeline = await this.$api(`/projects/${this.projectId}/pipelines/${pipeline.id}`)
               if (
                 (maxAge === 0 ||
@@ -248,54 +236,16 @@
                   resolvedPipeline.status !== 'skipped'
                 )
               ) {
-                resolvedPipelines.push(resolvedPipeline)
-              }
-            }
-
-            const historyCount = Config.getProjectProperty('historyCount', this.project.path_with_namespace)
-
-            newPipelines[refName] = []
-
-            for (const resolvedPipeline of resolvedPipelines) {
-              if (
-                !hideSkippedPipelines ||
-                resolvedPipeline.status !== 'skipped'
-              ) {
-                newPipelines[refName].push(resolvedPipeline)
-                count++
-              }
-
-              if (count >= historyCount) {
-                break refLoop
-              }
-            }
-
-            for (let i = newPipelines[refName].length; i < historyCount; i++) {
-              const resolvedPipeline = await this.$api(`/projects/${this.projectId}/pipelines/${pipelines[i].id}`)
-              if (
-                (maxAge === 0 ||
-                  ((new Date() - new Date(resolvedPipeline.updated_at)) / 1000 / 60 / 60 <= maxAge)
-                ) && (
-                  !hideSkippedPipelines ||
-                  resolvedPipeline.status !== 'skipped'
-                )
-              ) {
-                newPipelines[refName].push(resolvedPipeline)
-                count++
-
-                if (count >= historyCount) {
-                  break
+                if (!(refName in resolvedPipelinesByRef)) {
+                  resolvedPipelinesByRef[refName] = []
                 }
+                resolvedPipelinesByRef[refName].push(resolvedPipeline)
+                count++
               }
-            }
-
-            if (this.config.maxPipelines !== 0 && count >= this.config.maxPipelines) {
-              break
             }
           }
         }
-
-        this.pipelines = newPipelines
+        this.pipelines = resolvedPipelinesByRef
         this.refNames = refNames
         this.pipelineCount = count
         this.loading = false
