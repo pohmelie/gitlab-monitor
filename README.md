@@ -1,3 +1,7 @@
+# Changes from original
+- Reduced requests count (no refs request, only last pipelines)
+- Early cut of pipelines with equal refs by history count
+
 # GitLab Monitor
 
 ![Logo](/logo.svg)
